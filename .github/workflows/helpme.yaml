@@ -6,45 +6,33 @@ on:
   pull_request:
     branches: [main]
 
-# TODO#0: Declare workflow permissions.
-# Q: Why scope permissions per-workflow instead of repo-wide?
-# A: Principle of Least Privilege — จำกัดสิทธิ์เฉพาะ workflow นี้ ลด blast radius ถ้า token หลุด/โดนโจมตี
 permissions:
   contents: read
-  security-events: write # TODO#0a: upload SARIF
-  issues: write # TODO#0b: comment on issues
-  pull-requests: write # TODO#0b: comment on PRs
-  id-token: write # TODO#0c: OIDC token
-  actions: read # required for some workflows/scanners
+  security-events: write
+  issues: write
+  pull-requests: write
+  id-token: write
+  actions: read
 
 jobs:
-  # GATE#0: Secret scanning (TruffleHog + Gitleaks)
+  # GATE#0: Secret scanning
   secret-scanning:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # TODO#1: why do secret scanners need git history?
-          # A: secret อาจอยู่ใน commit เก่า แม้ถูกลบแล้ว → ต้อง scan history
-          fetch-depth: 0
+          fetch-depth: 0 # ต้องใช้ 0 เพื่อแสกนประวัติ commit ทั้งหมด
 
       - name: Run TruffleHog
         uses: trufflesecurity/trufflehog@main
         continue-on-error: true
         with:
           path: ./
-          # TODO#2: scan commit diff instead of whole repo
           base: ${{ github.event.repository.default_branch }}
           head: ${{ github.sha }}
-          # TODO#3: report only verified (live) secrets
           extra_args: --only-verified
 
-      # TODO#4: Gitleaks step
-      # Q: TruffleHog vs Gitleaks?
-      # A:
-      #   - TruffleHog → verify live creds → false positive น้อย แต่ miss เยอะ
-      #   - Gitleaks → regex patterns → false positive มาก แต่ miss น้อย
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         continue-on-error: true
@@ -54,7 +42,7 @@ jobs:
           GITLEAKS_ENABLE_SUMMARY: true
 
   # GATE#1a: SAST via SonarQube
-  sast-scan:
+  sast-sonar:
     runs-on: ubuntu-latest
     needs: secret-scanning
     if: ${{ !cancelled() }}
@@ -62,17 +50,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # TODO#5: Sonar needs full history (git blame / new code detection)
           fetch-depth: 0
 
-      # TODO#6: SonarQube scan
-      # Q: why not in GitHub Security tab?
-      # A: Sonar is external → results go to SonarCloud dashboard, not SARIF
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v7.1.0
         continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
 
   # GATE#1b: SAST via CodeQL
   codeql-scan:
@@ -80,8 +65,8 @@ jobs:
     needs: secret-scanning
     if: ${{ !cancelled() }}
     strategy:
+      fail-fast: false
       matrix:
-        # TODO#7: language for Next.js / React
         language: ["javascript"]
     steps:
       - name: Checkout code
@@ -91,67 +76,51 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
-          # TODO#8: use both suites
           queries: security-extended,security-and-quality
 
-      # TODO#9: analyze step
       - name: Perform CodeQL Analysis
-        id: analyze
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"
-
-      # 🔥 FIX สำคัญ: upload SARIF ให้ Security tab
-      - name: Upload CodeQL SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ${{ steps.analyze.outputs.sarif }}
-          category: codeql
+          # หมายเหตุ: ขั้นตอนนี้จะ Upload SARIF ให้โดยอัตโนมัติ ไม่ต้องเขียน Upload แยก
 
   # GATE#2: Dependency scanning
   dependency-scanning:
     runs-on: ubuntu-latest
-    needs: [sast-scan, secret-scanning]
+    needs: secret-scanning
     if: ${{ !cancelled() }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # TODO#10: setup Node 20
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      # TODO#11: install dependencies
       - name: Install dependencies
         run: npm ci
 
-      - name: Depcheck
+      - name: Run Dependency-Check
         uses: dependency-check/Dependency-Check_Action@main
         continue-on-error: true
         id: Depcheck
         with:
           project: "DontEverPushThisCodeV2"
           path: "."
-          # TODO#12: format for GitHub Security tab
           format: "SARIF"
-          out: "reports"
-          # TODO#13: CVSS threshold
+          out: "reports" # สร้างโฟลเดอร์ reports เก็บไฟล์
           args: >
             --failOnCVSS 7
             --enableRetired
 
-      # TODO#14: upload SARIF
       - name: Upload Depcheck SARIF to Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
         with:
           sarif_file: reports/dependency-check-report.sarif
           category: dependency-check
 
-      # TODO#15: upload artifact
       - name: Upload Depcheck HTML report as artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -162,38 +131,34 @@ jobs:
   # GATE#3: Container scanning
   image-scanning:
     runs-on: ubuntu-latest
-    needs: [dependency-scanning]
+    needs: secret-scanning
     if: ${{ !cancelled() }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # TODO#16: build image
       - name: Build Docker image
-        run: docker build -t my-app:latest .
+        run: docker build -t my-app:${{ github.sha }} .
 
       - name: Trivy Scan
         uses: aquasecurity/trivy-action@master
         continue-on-error: true
         with:
-          image-ref: "my-app:latest"
-          # TODO#17: format
+          image-ref: "my-app:${{ github.sha }}"
           format: "sarif"
           output: "trivy-results.sarif"
-          # TODO#18: severity
           severity: "HIGH,CRITICAL"
-          # TODO#19: include unfixed?
           ignore-unfixed: true
 
-      # TODO#20: upload SARIF
       - name: Upload Trivy SARIF
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
           category: trivy
 
-      # TODO#21: upload artifact
       - name: Upload Trivy artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
