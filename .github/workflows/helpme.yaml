@@ -35,7 +35,7 @@ jobs:
         with:
           path: ./
           # TODO#2: scan commit diff instead of whole repo
-          base: ${{ github.event.pull_request.base.sha }}
+          base: ${{ github.event.repository.default_branch }}
           head: ${{ github.sha }}
           # TODO#3: report only verified (live) secrets
           extra_args: --only-verified
@@ -92,19 +92,21 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           # TODO#8: use both suites
-          # Q: why both?
-          # A:
-          #   - security-extended → vulnerability focus
-          #   - security-and-quality → + maintainability
           queries: security-extended,security-and-quality
 
       # TODO#9: analyze step
-      # Q: what if category same across languages?
-      # A: results overwrite/collide in Security tab
       - name: Perform CodeQL Analysis
+        id: analyze
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"
+
+      # 🔥 FIX สำคัญ: upload SARIF ให้ Security tab
+      - name: Upload CodeQL SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.analyze.outputs.sarif }}
+          category: codeql
 
   # GATE#2: Dependency scanning
   dependency-scanning:
@@ -136,7 +138,6 @@ jobs:
           format: "SARIF"
           out: "reports"
           # TODO#13: CVSS threshold
-          # A: 7.0+ = HIGH
           args: >
             --failOnCVSS 7
             --enableRetired
@@ -180,11 +181,8 @@ jobs:
           format: "sarif"
           output: "trivy-results.sarif"
           # TODO#18: severity
-          # Q: should LOW/MEDIUM block?
-          # A: usually no → noise เยอะ → focus HIGH/CRITICAL
           severity: "HIGH,CRITICAL"
           # TODO#19: include unfixed?
-          # A: false → จะ fail ทั้งที่ยัง patch ไม่ได้
           ignore-unfixed: true
 
       # TODO#20: upload SARIF
@@ -195,7 +193,6 @@ jobs:
           category: trivy
 
       # TODO#21: upload artifact
-
       - name: Upload Trivy artifact
         uses: actions/upload-artifact@v4
         with:
