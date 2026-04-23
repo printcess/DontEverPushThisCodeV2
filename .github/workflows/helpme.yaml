@@ -240,4 +240,4 @@ jobs:
           path: trivy-results.sarif
 
   # GATE#4: IaC scanning — skipped (no IaC in scope)
-  # GATE#5: DAST — skipped (covered byZAP workshop)
+  # GATE#5: DAST — skipped (covered by ZAP workshop)
